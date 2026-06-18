@@ -15,7 +15,10 @@ from google.genai.errors import APIError # API 오류 처리를 위해 임포트
 import nltk
 from nltk.tokenize import sent_tokenize
 from sklearn.feature_extraction.text import TfidfVectorizer
-from transformers import pipeline
+try:
+    from transformers import pipeline as transformers_pipeline
+except Exception:
+    transformers_pipeline = None
 import tempfile
 import PyPDF2
 import docx
@@ -254,31 +257,38 @@ def generate_questions_gemini(client, text, num_questions, question_type, diffic
 
 def generate_questions_transformers(text, num_questions):
     """Generate questions using HuggingFace Transformers"""
+    if transformers_pipeline is None:
+        st.error(
+            "Hugging Face fallback is unavailable because the transformers package could not be imported. "
+            "Please use Gemini mode instead."
+        )
+        return None
+
     try:
         # Simple question generation pipeline
-        qa_generator = pipeline(
+        qa_generator = transformers_pipeline(
             "text2text-generation",
             model="mrm8488/t5-base-finetuned-question-generation-ap"
         )
-        
+
         # Process text in chunks
         chunk_size = 512
         chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
-        
+
         generated_questions = []
         for chunk in chunks[:3]:  # Process only first 3 chunks
             try:
                 result = qa_generator(chunk, max_length=100, num_return_sequences=1)
                 if result:
                     generated_questions.append(result[0]['generated_text'])
-            except Exception as e:
+            except Exception:
                 continue
-        
+
         return "\n".join(generated_questions) if generated_questions else "Failed to generate questions."
-    
+
     except Exception as e:
         st.error(f"Error loading Transformers model: {e}")
-        return "Failed to load model. Please check your internet connection."
+        return None
 
 # Main processing logic
 def main():
