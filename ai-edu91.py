@@ -1,11 +1,18 @@
 # 문제 만들기 앱 - 영어 버전  Gemini
 #
 import streamlit as st
-import pdfplumber
+import re
+
+try:
+    import pdfplumber
+except ModuleNotFoundError:
+    pdfplumber = None
+
 # import openai  # OpenAI 대신 Gemini 사용을 위해 주석 처리
 from google import genai # Google Gemini SDK를 임포트
-from google.genai.errors import APIError # API 오류 처리를 위해 임포트
 import os
+from google.genai.errors import APIError # API 오류 처리를 위해 임포트
+import nltk
 from nltk.tokenize import sent_tokenize
 from sklearn.feature_extraction.text import TfidfVectorizer
 from transformers import pipeline
@@ -32,12 +39,21 @@ gemini_api_key = None
 # Gemini 클라이언트 객체
 gemini_client = None
 
+# Streamlit secrets 또는 환경변수에서 Gemini API 키를 안전하게 읽기
+try:
+    if "GEMINI_API_KEY" in st.secrets:
+        gemini_api_key = st.secrets["GEMINI_API_KEY"]
+    elif "api_keys" in st.secrets and "GEMINI_API_KEY" in st.secrets["api_keys"]:
+        gemini_api_key = st.secrets["api_keys"]["GEMINI_API_KEY"]
+    else:
+        gemini_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+except Exception:
+    gemini_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
 # Sidebar settings
 with st.sidebar:
     st.header("Settings")
-    
-    gemini_api_key = st.secrets["api_keys"]["my_gemini_key"]
-   
+
     if gemini_api_key:
         try:
             # Gemini 클라이언트 초기화
@@ -45,7 +61,11 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Error initializing Gemini client: {e}")
             gemini_client = None
-
+    else:
+        st.warning(
+            "Gemini API 키가 설정되지 않았습니다. "
+            ".streamlit/secrets.toml 또는 환경변수(GEMINI_API_KEY)에 키를 추가하세요."
+        )
 
     # Number of questions setting
     num_questions = st.slider(
@@ -94,14 +114,25 @@ text_input = st.text_area(
 def extract_text_from_pdf(file):
     """Extract text from PDF file"""
     try:
-        # file 객체를 BytesIO로 변환하여 pdfplumber에 전달
         file.seek(0)
-        with pdfplumber.open(file) as pdf:
-            text = ""
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
+
+        if pdfplumber is not None:
+            with pdfplumber.open(file) as pdf:
+                text = ""
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+            return text.strip()
+
+        # Fallback if pdfplumber is not installed
+        file.seek(0)
+        reader = PyPDF2.PdfReader(file)
+        text = ""
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
         return text.strip()
     except Exception as e:
         st.error(f"Error extracting text from PDF: {e}")
@@ -128,18 +159,35 @@ def extract_text_from_docx(file):
         st.error(f"Error reading Word document: {e}")
         return None
 
+def ensure_nltk_resources():
+    """Download required NLTK resources if they are missing."""
+    try:
+        for resource in ("punkt", "punkt_tab"):
+            try:
+                nltk.data.find(f"tokenizers/{resource}")
+            except LookupError:
+                st.warning(f"Downloading NLTK resource: {resource}")
+                nltk.download(resource, quiet=True)
+    except Exception as e:
+        st.warning(f"Could not verify NLTK resources: {e}")
+
+
 def preprocess_text(text):
     """Preprocess text"""
     if not text:
         return None
-    
+
+    ensure_nltk_resources()
+
     # Sentence tokenization
     try:
         sentences = sent_tokenize(text)
         st.info(f"Extracted {len(sentences)} sentences from the text.")
         return text
     except Exception as e:
-        st.warning(f"Error in sentence tokenization: {e}. Using original text.")
+        st.warning(f"Sentence tokenization failed: {e}. Using original text.")
+        fallback_sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text.strip()) if s.strip()]
+        st.info(f"Extracted {len(fallback_sentences)} approximate sentences from the text.")
         return text
 
 # --- Gemini API를 사용하도록 함수 변경 ---
@@ -299,13 +347,8 @@ def main():
     else:
         st.info("Please upload a file or enter text to get started.")
 
-# Check for NLTK data
-try:
-    sent_tokenize("test")
-except LookupError:
-    st.warning("Downloading NLTK data...")
-    import nltk
-    nltk.download('punkt')
+# Check for NLTK data once on startup
+ensure_nltk_resources()
 
 if __name__ == "__main__":
     main()
